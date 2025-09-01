@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stimmanalyse – Handy (WebApp)</title>
+<style>
+  :root{--bg:#f9fafb;--card:#fff;--muted:#6b7280;--b:#e5e7eb;--ok:#d1fae5;--bad:#fee2e2}
+  body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;margin:16px;background:var(--bg)}
+  h1{font-size:24px;margin:0 0 12px}
+  .card{background:var(--card);border:1px solid var(--b);border-radius:12px;padding:14px;box-shadow:0 1px 2px rgba(0,0,0,.04);margin-bottom:14px}
+  .row{display:flex;gap:10px;flex-wrap:wrap;margin:8px 0}
+  label{font-size:13px;color:#111827;display:block;margin:6px 0 4px}
+  input[type=number]{width:100%;padding:10px;border-radius:10px;border:1px solid #d1d5db}
+  .grid{display:grid;grid-template-columns:repeat(2, minmax(0,1fr));gap:10px}
+  .pill{padding:6px 10px;border-radius:999px;font-weight:600;display:inline-block}
+  .ok{background:var(--ok)} .bad{background:var(--bad)} .muted{background:#eef2f7;color:var(--muted)}
+  button{border:0;border-radius:10px;padding:12px 14px;font-weight:600}
+  #btnCompare{background:#111827;color:#fff} #btnSave{background:#059669;color:#fff;display:none}
+  #btnRec{background:#2563eb;color:#fff} #btnStop{background:#ef4444;color:#fff;display:none}
+  .mini{font-size:12px;color:var(--muted)}
+  .kv{display:flex;justify-content:space-between;align-items:center;margin:6px 0}
+  .kv .k{color:#111827} .kv .v{font-variant-numeric:tabular-nums}
+  .filebtn{background:#6b7280;color:#fff;border-radius:10px;padding:10px 12px;font-weight:600;cursor:pointer;display:inline-block}
+  input[type=file]{display:none}
+</style>
+</head>
+<body>
+  <h1>Stimmanalyse (Handy)</h1>
+
+  <div class="card">
+    <div class="row">
+      <button id="btnRec">🎤 Aufnahme starten</button>
+      <button id="btnStop">Stopp</button>
+      <label class="filebtn" for="xlsx">Excel laden</label>
+      <input id="xlsx" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
+      <button id="btnCompare">Bewerten (Ampel)</button>
+      <button id="btnSave">Als Excel speichern</button>
+    </div>
+    <div class="mini">Tipp: In Safari beim ersten Mal Mikrofon erlauben. Optional: Excel (Blatt <b>Handy-Auswertung</b>) laden für Vergleich mit letzter Zeile.</div>
+    <div class="mini" id="refInfo">Letzte Referenz: –</div>
+  </div>
+
+  <div class="card">
+    <div class="grid">
+      <div><label>Grundfrequenz (Median, Hz)</label><input id="f0med" type="number" step="0.1" placeholder="wird bei Aufnahme gefüllt"></div>
+      <div><label>Min. Frequenz (Hz)</label><input id="f0min" type="number" step="0.1" placeholder="wird bei Aufnahme gefüllt"></div>
+      <div><label>Max. Frequenz (Hz)</label><input id="f0max" type="number" step="0.1" placeholder="wird bei Aufnahme gefüllt"></div>
+      <div><label>Lautstärke (dBFS≈SPL)</label><input id="loud" type="number" step="0.1" placeholder="wird bei Aufnahme gefüllt"></div>
+      <div><label>Jitter (%)</label><input id="jitter" type="number" step="0.01" placeholder="auto aus Aufnahme"></div>
+      <div><label>Shimmer (%)</label><input id="shimmer" type="number" step="0.01" placeholder="auto aus Aufnahme"></div>
+      <div><label>HNR (dB)</label><input id="hnr" type="number" step="0.1" placeholder="auto aus Aufnahme"></div>
+    </div>
+    <div class="mini">Datum/Uhrzeit setzt die App automatisch beim Speichern.</div>
+  </div>
+
+  <div class="card" id="resultCard" style="display:none">
+    <div class="kv"><span class="k">RBH</span><span class="v"><span id="rbh" class="pill muted">–</span></span></div>
+    <div class="kv"><span class="k">Stimmqualität</span><span class="v"><span id="qual" class="pill muted">–</span></span></div>
+    <div class="kv"><span class="k">Empfinden</span><span class="v"><span id="feel" class="pill muted">–</span></span></div>
+    <div class="kv"><span class="k">Grundfrequenz (Hz)</span><span class="v"><span id="v_f0med" class="pill muted">–</span></span></div>
+    <div class="kv"><span class="k">Min. Frequenz (Hz)</span><span class="v"><span id="v_f0min" class="pill muted">–</span></span></div>
+    <div class="kv"><span class="k">Max. Frequenz (Hz)</span><span class="v"><span id="v_f0max" class="pill muted">–</span></span></div>
+    <div class="kv"><span class="k">Lautstärke (dB)</span><span class="v"><span id="v_loud" class="pill muted">–</span></span></div>
+    <div class="kv"><span class="k">Jitter (%)</span><span class="v"><span id="v_jitter" class="pill muted">–</span></span></div>
+    <div class="kv"><span class="k">Shimmer (%)</span><span class="v"><span id="v_shimmer" class="pill muted">–</span></span></div>
+    <div class="kv"><span class="k">HNR (dB)</span><span class="v"><span id="v_hnr" class="pill muted">–</span></span></div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script>
+    // ===== Aufnahme + Analyse (im Browser) =====
+    let mediaRecorder, chunks=[], audioBuffer=null, sampleRate=48000;
+
+    const $ = id => document.getElementById(id);
+    const getNum = id => parseNum($(id).value);
+
+    $("btnRec").onclick = async () => {
+      try{
+        const stream = await navigator.mediaDevices.getUserMedia({audio:true});
+        mediaRecorder = new MediaRecorder(stream, {mimeType:'audio/webm'});
+        chunks = [];
+        mediaRecorder.ondataavailable = e => chunks.push(e.data);
+        mediaRecorder.onstop = async () => {
+          const blob = new Blob(chunks, {type:'audio/webm'});
+          const ab = await blob.arrayBuffer();
+          const ctx = new (window.AudioContext||window.webkitAudioContext)();
+          const buf = await ctx.decodeAudioData(ab);
+          sampleRate = buf.sampleRate;
+          const data = buf.numberOfChannels>1 ? mixToMono(buf) : buf.getChannelData(0);
+          audioBuffer = data;
+          // Auto-Analyse
+          const {f0med, f0min, f0max, loud, jitter, shimmer, hnr} = analyzeAll(audioBuffer, sampleRate);
+          $("f0med").value = isFinite(f0med)? f0med.toFixed(1) : "";
+          $("f0min").value = isFinite(f0min)? f0min.toFixed(1) : "";
+          $("f0max").value = isFinite(f0max)? f0max.toFixed(1) : "";
+          $("loud").value  = isFinite(loud)  ? loud.toFixed(1)  : "";
+          $("jitter").value= isFinite(jitter)? jitter.toFixed(2): "";
+          $("shimmer").value= isFinite(shimmer)? shimmer.toFixed(2): "";
+          $("hnr").value   = isFinite(hnr)   ? hnr.toFixed(1)   : "";
+        };
+        mediaRecorder.start();
+        $("btnRec").style.display='none';
+        $("btnStop").style.display='inline-block';
+      }catch(err){
+        alert("Mikrofon-Zugriff fehlgeschlagen. Bitte im Browser erlauben.");
+        console.error(err);
+      }
+    };
+    $("btnStop").onclick = () => {
+      if(mediaRecorder && mediaRecorder.state!=="inactive"){ mediaRecorder.stop(); }
+      $("btnStop").style.display='none';
+      $("btnRec").style.display='inline-block';
+    };
+
+    function mixToMono(buf){
+      const ch0 = buf.getChannelData(0), ch1 = buf.numberOfChannels>1?buf.getChannelData(1):buf.getChannelData(0);
+      const out = new Float32Array(ch0.length);
+      for(let i=0;i<out.length;i++) out[i] = 0.5*(ch0[i]+ch1[i]);
+      return out;
+    }
+
+    function analyzeAll(y, sr){
+      // normalize
+      let m=0; for(let i=0;i<y.length;i++) m=Math.max(m,Math.abs(y[i])); if(m>0) for(let i=0;i<y.length;i++) y[i]/=m;
+      // Loudness dBFS
+      let sum=0; for(let i=0;i<y.length;i++) sum+=y[i]*y[i];
+      const rms=Math.sqrt(sum/y.length); const dB=20*Math.log10(Math.max(rms,1e-12));
+
+      // F0 via simple autocorr track
+      const ftrack = estimateF0Track(y, sr).filter(v=>isFinite(v)&&v>0);
+      const f0med = percentile(ftrack,50), f0min=percentile(ftrack,5), f0max=percentile(ftrack,95);
+
+      // Jitter: rel. SD der Perioden
+      let jitterPct = NaN;
+      if(ftrack.length>10){
+        const periods = ftrack.map(f=>1.0/f);
+        jitterPct = (std(periods)/mean(periods))*100.0;
+      }
+
+      // Shimmer: Variabilität der Amplitudenhüllkurve
+      const env = envelopeAbs(y, 1024);
+      const shimmerPct = (std(env)/Math.max(mean(env),1e-12))*100.0;
+
+      // HNR: Verhältnis größter Autokorr-Peak zu Rest
+      const hnrDb = hnrFromAutocorr(y, sr);
+
+      return { f0med, f0min, f0max, loud: dB+100, jitter: jitterPct, shimmer: shimmerPct, hnr: hnrDb };
+    }
+
+    function estimateF0Track(x, sr){
+      const hop=256, win=1024;
+      const nFrames=Math.max(0,Math.floor((x.length-win)/hop));
+      const out=new Array(nFrames);
+      for(let i=0;i<nFrames;i++){
+        const start=i*hop;
+        out[i]=pitchFromFrame(x.slice(start,start+win), sr);
+      }
+      return out;
+    }
+    function pitchFromFrame(frame, sr){
+      const n=frame.length;
+      // DC remove + Hann
+      let m=0; for(let i=0;i<n;i++) m+=frame[i]; m/=n;
+      for(let i=0;i<n;i++){ frame[i]-=m; frame[i]*=0.5*(1-Math.cos(2*Math.PI*i/(n-1))); }
+      let maxv=0, maxLag=-1;
+      const minLag=Math.floor(sr/300), maxLag=Math.floor(sr/60);
+      for(let lag=minLag; lag<=maxLag; lag++){
+        let s=0; for(let i=0;i<n-lag;i++) s+=frame[i]*frame[i+lag];
+        if(s>maxv){ maxv=s; maxLag=lag; }
+      }
+      return maxLag>0 ? sr/maxLag : NaN;
+    }
+    function envelopeAbs(x, win){
+      const n=x.length, out=new Array(Math.ceil(n/win));
+      for(let i=0;i<out.length;i++){
+        let s=0,c=0;
+        for(let j=i*win;j<Math.min(n,(i+1)*win);j++){ s+=Math.abs(x[j]); c++; }
+        out[i] = c? s/c : 0;
+      }
+      return out;
+    }
+    function hnrFromAutocorr(x, sr){
+      const N=Math.min(48000, x.length);
+      const a=x.slice(0,N);
+      // energy at lag 0
+      let r0=0; for(let i=0;i<N;i++) r0+=a[i]*a[i];
+      // search peak in voice range
+      let maxr=1e-12;
+      const minLag=Math.floor(sr/300), maxLag=Math.floor(sr/60);
+      for(let lag=minLag; lag<=maxLag; lag++){
+        let r=0;
+        for(let i=0;i<N-lag;i++) r+=a[i]*a[i+lag];
+        if(r>maxr) maxr=r;
+      }
+      const noise = Math.max(r0-maxr, 1e-12);
+      return 10*Math.log10(maxr/noise);
+    }
+
+    function mean(a){ return a.reduce((s,v)=>s+v,0)/a.length; }
+    function std(a){ const m=mean(a); return Math.sqrt(mean(a.map(v=>(v-m)*(v-m)))); }
+    function percentile(arr,p){ if(!arr.length) return NaN; const a=[...arr].sort((x,y)=>x-y); const k=Math.floor((p/100)*(a.length-1)); return a[k]; }
+    function parseNum(x){ const t=String(x??"").replace(",","."); const n=Number(t); return isFinite(n)?n:null; }
+
+    // ===== Ampel + Auto RBH/Qualität/Empfinden + Excel =====
+    let workbook=null, sheetName="Handy-Auswertung", lastRow=null, ref=null;
+
+    $("xlsx").onchange = async (e)=>{
+      const file = e.target.files[0];
+      const data = await file.arrayBuffer();
+      workbook = XLSX.read(data, {type:"array"});
+      const ws = workbook.Sheets[sheetName] || workbook.Sheets[workbook.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, {header:1});
+      lastRow = null;
+      for(let i=rows.length-1; i>=1; i--){
+        if(rows[i] && rows[i].length >= 10){ lastRow = rows[i]; break; }
+      }
+      if(lastRow){
+        ref = {
+          "Grundfrequenz (Hz)": num(lastRow[3]),
+          "Min. Frequenz (Hz)": num(lastRow[4]),
+          "Max. Frequenz (Hz)": num(lastRow[5]),
+          "Lautstärke (dB)": num(lastRow[6]),
+          "Jitter (%)": num(lastRow[7]),
+          "Shimmer (%)": num(lastRow[8]),
+          "HNR (dB)": num(lastRow[9])
+        };
+        $("refInfo").textContent = `Letzte Zeile: ${lastRow[0]} ${lastRow[1]||""} | F0 ${ref["Grundfrequenz (Hz)"]??"–"} Hz, HNR ${ref["HNR (dB)"]??"–"} dB, Jitter ${ref["Jitter (%)"]??"–"} %`;
+      } else { ref=null; $("refInfo").textContent="Letzte Referenz: –"; }
+    };
+
+    $("btnCompare").onclick = ()=>{
+      const cur = getCurrentValues(); if(!cur){ alert("Bitte Aufnahme durchführen (die Felder füllen sich automatisch)."); return; }
+      // Ampel
+      paint("v_f0med",cur["Grundfrequenz (Hz)"],higher("Grundfrequenz (Hz)"));
+      paint("v_f0min",cur["Min. Frequenz (Hz)"], higher("Min. Frequenz (Hz)"));
+      paint("v_f0max",cur["Max. Frequenz (Hz)"], higher("Max. Frequenz (Hz)"));
+      paint("v_loud", cur["Lautstärke (dB)"],    higher("Lautstärke (dB)"));
+      paint("v_jitter",cur["Jitter (%)"],         lower("Jitter (%)"));
+      paint("v_shimmer",cur["Shimmer (%)"],       lower("Shimmer (%)"));
+      paint("v_hnr",  cur["HNR (dB)"],            higher("HNR (dB)"));
+      // Auto RBH/Qualität/Empfinden
+      const scoreUp = [
+        cmpVal(cur,"HNR (dB)",(a,b)=>a>b),
+        cmpVal(cur,"Jitter (%)",(a,b)=>a<b),
+        cmpVal(cur,"Shimmer (%)",(a,b)=>a<b)
+      ].filter(Boolean).length;
+      let RBH="1-1-1", QUAL="gepresst / belegt", FEEL="angespannt";
+      if(scoreUp>=3){ RBH="0-0-0"; QUAL="klar, frei"; FEEL="leicht, mühelos"; }
+      else if(scoreUp==2){ RBH="1-0-0"; QUAL="klar"; FEEL="angenehm"; }
+      else if(scoreUp==1){ RBH="1-1-0"; QUAL="etwas belegt"; FEEL="etwas anstrengend"; }
+      setPill("rbh",RBH,"ok"); setPill("qual",QUAL,"ok"); setPill("feel",FEEL,"ok");
+      $("resultCard").style.display="block"; $("btnSave").style.display="inline-block";
+    };
+
+    $("btnSave").onclick = ()=>{
+      const cur = getCurrentValues(); if(!cur){ alert("Bitte Aufnahme durchführen, dann speichern."); return; }
+      const now = new Date(); const pad=n=>String(n).padStart(2,"0");
+      const datum = now.getFullYear()+"-"+pad(now.getMonth()+1)+"-"+pad(now.getDate());
+      const uhr = pad(now.getHours())+":"+pad(now.getMinutes());
+      const row = [datum,uhr,"Handy",cur["Grundfrequenz (Hz)"],cur["Min. Frequenz (Hz)"],cur["Max. Frequenz (Hz)"],cur["Lautstärke (dB)"],cur["Jitter (%)"],cur["Shimmer (%)"],cur["HNR (dB)"],$("rbh").textContent,$("qual").textContent,$("feel").textContent];
+      if(!workbook){
+        const header=["Datum","Uhrzeit","Aufnahmegerät","Grundfrequenz (Hz)","Min. Frequenz (Hz)","Max. Frequenz (Hz)","Lautstärke (dB)","Jitter (%)","Shimmer (%)","HNR (dB)","RBH","Stimmqualität","Subjektives Empfinden"];
+        const ws=XLSX.utils.aoa_to_sheet([header,row]); const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,"Handy-Auswertung"); const out=XLSX.write(wb,{type:"array",bookType:"xlsx"}); download(out,"Stimmanalyse_Handy_Ampelfarben_UPDATED.xlsx");
+      } else {
+        const ws=workbook.Sheets["Handy-Auswertung"]||workbook.Sheets[workbook.SheetNames[0]]; const aoa=XLSX.utils.sheet_to_json(ws,{header:1}); aoa.push(row); const newWs=XLSX.utils.aoa_to_sheet(aoa); workbook.Sheets["Handy-Auswertung"]=newWs; const out=XLSX.write(workbook,{type:"array",bookType:"xlsx"}); download(out,"Stimmanalyse_Handy_Ampelfarben_UPDATED.xlsx");
+      }
+    };
+
+    // Helpers
+    function getCurrentValues(){
+      const v = {
+        "Grundfrequenz (Hz)": parseNum($("f0med").value),
+        "Min. Frequenz (Hz)": parseNum($("f0min").value),
+        "Max. Frequenz (Hz)": parseNum($("f0max").value),
+        "Lautstärke (dB)"  : parseNum($("loud").value),
+        "Jitter (%)"       : parseNum($("jitter").value),
+        "Shimmer (%)"      : parseNum($("shimmer").value),
+        "HNR (dB)"         : parseNum($("hnr").value)
+      };
+      if(v["Grundfrequenz (Hz)"]==null || v["Lautstärke (dB)"]==null) return null;
+      return v;
+    }
+    function num(x){ const t=String(x??"").replace(",","."), n=Number(t); return isFinite(n)?n:null; }
+    function setPill(id, text, cls){ const el=$(id); el.textContent=text; el.className="pill "+(cls||"muted"); }
+    function paint(id, value, cmpFn){ const el=$(id); if(value==null||!isFinite(value)){ el.textContent="–"; el.className="pill muted"; return; } el.textContent=(Math.round(value*10)/10); const st=cmpFn?cmpFn(value):"neutral"; el.className="pill "+(st==="up"?"ok":(st==="down"?"bad":"muted")); }
+    function cmpVal(cur,key,better){ if(!ref||ref[key]==null||!isFinite(ref[key])) return null; const a=cur[key],b=ref[key]; if(a==null||!isFinite(a)) return null; return better(a,b); }
+    function higher(key){ return (a)=>{ if(!ref||ref[key]==null||!isFinite(ref[key])||a==null||!isFinite(a)) return "neutral"; return a>ref[key]?"up":(a<ref[key]?"down":"neutral"); }; }
+    function lower(key){ return (a)=>{ if(!ref||ref[key]==null||!isFinite(ref[key])||a==null||!isFinite(a)) return "neutral"; return a<ref[key]?"up":(a>ref[key]?"down":"neutral"); }; }
+    function download(arrayBuf, filename){ const blob=new Blob([arrayBuf],{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}); const url=URL.createObjectURL(blob); const a=document.createElement("a"); a.href = url; a.download = filename; document.body.appendChild(a); a.click(); setTimeout(()=>{document.body.removeChild(a); URL.revokeObjectURL(url);},400); }
+  </script>
+</body>
+</html>
